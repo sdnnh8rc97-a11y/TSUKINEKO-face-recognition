@@ -230,29 +230,37 @@ def save_all(X, y, knn, svm, centers, label_map, thresholds):
 # Main
 # ================================
 if __name__ == "__main__":
-    X_old, y_old = load_old_data()
-    new_list = detect_new_persons(y_old)
+    X_old, y_old, label_map_old = load_old_data()
+
+    # 偵測新增人物
+    existing_names = set(y_old.tolist())
+    new_list = detect_new_persons(existing_names)
 
     if len(new_list) == 0 and len(X_old) > 0:
         print("\n✔ 沒有新增人員，不需要重新訓練")
         exit()
 
+    # 提取 embedding
     X_new, y_new = extract_embeddings(new_list)
 
-    # 合併資料
-    X = np.concatenate([X_old, X_new]) if len(X_old) > 0 else X_new
-    y = np.concatenate([y_old, y_new]) if len(y_old) > 0 else y_new
+    # 合併
+    X_raw = np.concatenate([X_old, X_new]) if len(X_old) > 0 else X_new
+    y_raw = np.concatenate([y_old, y_new]) if len(y_old) > 0 else y_new
 
-    # label_map：人名 → index
-    label_map = {label: i for i, label in enumerate(sorted(np.unique(y)))}
+    # 重建 label_map（中文 → index）
+    unique_names = sorted(set(y_raw.tolist()))
+    label_map = {name: idx for idx, name in enumerate(unique_names)}
+    y_index = np.array([label_map[name] for name in y_raw])
 
-    knn = train_knn(X, y)
-    svm = train_svm(X, y)
-    centers = calc_centers(X, y)
+    # 重新訓練分類器
+    knn = train_knn(X_raw, y_raw)
+    svm = train_svm(X_raw, y_raw)
+    centers = calc_centers(X_raw, y_raw)
 
-    # ⭐ 自動 threshold（距離版）
-    thresholds = auto_threshold_distance(X, y)
+    # 自動 threshold
+    thresholds = auto_threshold_distance(X_raw, y_raw)
 
-    save_all(X, y, knn, svm, centers, label_map, thresholds)
+    # 儲存
+    save_all(X_raw, y_index, knn, svm, centers, label_map, thresholds)
 
     print("\n🎉 三分類器訓練完成！")
