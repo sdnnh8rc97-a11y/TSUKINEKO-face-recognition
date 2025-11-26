@@ -1,1 +1,8 @@
+numpy
+scikit-learn
+matplotlib
+opencv-python
+insightface
+onnxruntime
+tqdm
 
