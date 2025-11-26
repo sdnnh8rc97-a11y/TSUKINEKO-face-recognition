@@ -1,4 +1,3 @@
-%%writefile /content/face_system/src/train_ensemble.py
 import os
 import json
 import pickle
