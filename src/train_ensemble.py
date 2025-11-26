@@ -29,20 +29,29 @@ def load_old_data():
     y_path = os.path.join(MODEL_DIR, "y.npy")
     map_path = os.path.join(MODEL_DIR, "label_map.json")
 
-    if os.path.exists(X_path) and os.path.exists(y_path) and os.path.exists(map_path):
-        print("📂 載入舊資料 X.npy / y.npy / label_map.json")
+    if not (os.path.exists(X_path) and os.path.exists(y_path) and os.path.exists(map_path)):
+        print("⚠️ 第一次訓練，未找到舊模型")
+        return np.array([]), np.array([]), {}
 
-        X = np.load(X_path)
-        y_index = np.load(y_path)
-        label_map = json.load(open(map_path, "r", encoding="utf-8"))
+    print("📂 載入舊資料 X.npy / y.npy / label_map.json")
 
-        inv_map = {int(v): k for k, v in label_map.items()}
-        y_raw = np.array([inv_map[idx] for idx in y_index])
+    X = np.load(X_path)
+    y_index = np.load(y_path)
+    label_map = json.load(open(map_path, "r", encoding="utf-8"))
 
-        return X, y_raw, label_map
+    # 自動處理 value 不是整數的舊格式
+    inv_map = {}
+    for name, idx in label_map.items():
+        try:
+            inv_map[int(idx)] = name
+        except:
+            # 不可轉成 int = 舊格式 → 放棄舊資料、重訓
+            print("⚠️ 偵測到舊格式 label_map，將進行全面重訓")
+            return np.array([]), np.array([]), {}
 
-    print("⚠️ 第一次訓練，未找到舊模型")
-    return np.array([]), np.array([]), {}
+    y_raw = np.array([inv_map[i] for i in y_index])
+    return X, y_raw, label_map
+
 
 # ================================
 # 2. 偵測新增 / 刪除人員
