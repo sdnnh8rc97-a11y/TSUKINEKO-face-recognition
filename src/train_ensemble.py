@@ -9,7 +9,6 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.svm import SVC
 from insightface.app import FaceAnalysis
 
-
 # ================================
 # 設定
 # ================================
@@ -26,7 +25,7 @@ def imread_safe(path):
 
 
 # ================================
-# 偵測新增人物
+# 載入舊資料
 # ================================
 def load_old_data():
     X_path = os.path.join(MODEL_DIR, "X.npy")
@@ -40,8 +39,10 @@ def load_old_data():
 
 
 def detect_new_persons(y_old):
-    """檢查 RAW_DIR 裡哪些資料夾沒訓練過"""
+    """檢查 RAW_DIR 裡哪些人物沒有在原本 y_old 裡"""
     persons = sorted(os.listdir(RAW_DIR))
+
+    # y_old 裡存的是人名（非 index）
     old_people = set(y_old.tolist()) if len(y_old) > 0 else set()
 
     new_list = [p for p in persons if p not in old_people]
@@ -54,7 +55,6 @@ def detect_new_persons(y_old):
 # ================================
 app = FaceAnalysis(name="buffalo_l")
 app.prepare(ctx_id=0)
-
 
 def extract_embeddings(person_list):
     X, y = [], []
@@ -83,24 +83,22 @@ def extract_embeddings(person_list):
 
 
 # ================================
-# 3 分類器訓練
+# 三分類器
 # ================================
 def train_knn(X, y):
     print("\n🚀 訓練 KNN ...")
-    knn = KNeighborsClassifier(n_neighbors=3)
-    knn.fit(X, y)
-    return knn
-
+    model = KNeighborsClassifier(n_neighbors=3)
+    model.fit(X, y)
+    return model
 
 def train_svm(X, y):
     print("\n🚀 訓練 SVM ...")
-    svm = SVC(kernel="linear", probability=True)
-    svm.fit(X, y)
-    return svm
-
+    model = SVC(kernel="linear", probability=True)
+    model.fit(X, y)
+    return model
 
 def calc_centers(X, y):
-    print("\n🚀 計算 Centers ...")
+    print("\n🚀 計算 centers ...")
     centers = {}
     labels = np.unique(y)
     for person in labels:
@@ -109,43 +107,97 @@ def calc_centers(X, y):
 
 
 # ================================
-# 門檻自動微調（Unknown 最重要的部分）
+# ⭐⭐⭐ 自動 threshold（距離版）⭐⭐⭐
 # ================================
-def compute_cosine(a, b):
-    return np.dot(a, b) / (norm(a) * norm(b))
+def auto_threshold_distance(X, y):
+    print("\n📊 正在載入 embedding X, y ...")
+    same_dists = []
+    diff_dists = []
 
+    print("📏 計算 SAME / DIFF 距離中...\n")
 
-def auto_threshold(X, y, centers):
-    print("\n🧠 自動微調 Unknown 門檻 ...")
+    # 全部 pairwise distance
+    for i in range(len(X)):
+        for j in range(i + 1, len(X)):
+            d = np.linalg.norm(X[i] - X[j])  # L2 distance
 
-    pos = []
-    neg = []
+            if y[i] == y[j]:
+                same_dists.append(d)
+            else:
+                diff_dists.append(d)
 
-    for emb, label in zip(X, y):
-        # 正例 similarity
-        pos.append(compute_cosine(emb, centers[label]))
+    same_dists = np.array(same_dists)
+    diff_dists = np.array(diff_dists)
 
-        # 負例 similarity
-        for other, vec in centers.items():
-            if other != label:
-                neg.append(compute_cosine(emb, vec))
+    print(f"✔ SAME（同一人）距離")
+    print(f"   平均：{same_dists.mean():.4f}")
+    print(f"   最小：{same_dists.min():.4f}")
+    print(f"   最大：{same_dists.max():.4f}\n")
 
-    pos = np.array(pos)
-    neg = np.array(neg)
+    print(f"❌ DIFF（不同人）距離")
+    print(f"   平均：{diff_dists.mean():.4f}")
+    print(f"   最小：{diff_dists.min():.4f}")
+    print(f"   最大：{diff_dists.max():.4f}\n")
 
-    # 門檻建議作法：負例的 μ + 1.5σ
-    thr = neg.mean() + 1.5 * neg.std()
+    # ======== 偵測嚴重錯誤（不同人距離 = 0）========
+    print("🕵️‍♂️ 檢查是否有 DIFF 距離 = 0 ...")
+    zero_dist_indices = np.where(diff_dists == 0)[0]
+    if len(zero_dist_indices) > 0:
+        print("❗ 注意：有不同人的 embedding 完全相同！")
+        print("   ➤ 代表照片資料錯放 or embedding 錯混")
+    else:
+        print("✔ 未發現距離=0 的異常 embedding")
 
-    thr = float(max(min(thr, 0.60), 0.30))  # 安全限制區間
-    print(f"📌 建議門檻：{thr:.4f}")
+    # ======== Youden’s J 最佳 threshold ========
+    print("\n🔍 正在使用 Youden’s J 找最佳 threshold...\n")
 
-    return thr
+    candidates = np.linspace(0.0, 2.0, 2000)
+    best_j = -1
+    best_t = 0
+
+    for t in candidates:
+        tp = np.sum(same_dists <= t)
+        fn = np.sum(same_dists > t)
+        tn = np.sum(diff_dists > t)
+        fp = np.sum(diff_dists <= t)
+
+        sensitivity = tp / (tp + fn + 1e-6)
+        specificity = tn / (tn + fp + 1e-6)
+
+        J = sensitivity + specificity - 1
+
+        if J > best_j:
+            best_j = J
+            best_t = t
+
+    # 三種策略
+    t_conservative = same_dists.max() + 0.02
+    t_balanced = best_t
+    t_loose = diff_dists.min() - 0.02
+
+    print("🎯 自動 threshold 計算結果：\n")
+    print(f"🔒 保守（不錯認）：{t_conservative:.4f}")
+    print(f"⚖️ 平衡（最佳 J）：{t_balanced:.4f}")
+    print(f"🎈 寬鬆（不漏認）：{t_loose:.4f}")
+
+    # 寫檔
+    thresholds = {
+        "conservative": float(t_conservative),
+        "balanced": float(t_balanced),
+        "loose": float(t_loose)
+    }
+
+    with open(os.path.join(MODEL_DIR, "threshold.json"), "w") as f:
+        json.dump(thresholds, f, indent=4)
+
+    print("\n💾 已寫入 threshold.json")
+    return thresholds
 
 
 # ================================
 # 儲存
 # ================================
-def save_all(X, y, knn, svm, centers, label_map, threshold):
+def save_all(X, y, knn, svm, centers, label_map, thresholds):
     np.save(f"{MODEL_DIR}/X.npy", X)
     np.save(f"{MODEL_DIR}/y.npy", y)
 
@@ -160,9 +212,6 @@ def save_all(X, y, knn, svm, centers, label_map, threshold):
 
     with open(f"{MODEL_DIR}/label_map.json", "w") as f:
         json.dump(label_map, f, ensure_ascii=False, indent=2)
-
-    with open(f"{MODEL_DIR}/threshold.json", "w") as f:
-        json.dump({"cosine_threshold": threshold}, f, indent=2)
 
     print("\n💾 所有模型/資料已保存完畢！")
 
@@ -184,18 +233,16 @@ if __name__ == "__main__":
     X = np.concatenate([X_old, X_new]) if len(X_old) > 0 else X_new
     y = np.concatenate([y_old, y_new]) if len(y_old) > 0 else y_new
 
-    # label_map
+    # label_map：人名 → index
     label_map = {label: i for i, label in enumerate(sorted(np.unique(y)))}
 
-    # 訓練三分類器
     knn = train_knn(X, y)
     svm = train_svm(X, y)
     centers = calc_centers(X, y)
 
-    # 動態 Unknown 門檻
-    thr = auto_threshold(X, y, centers)
+    # ⭐ 自動 threshold（距離版）
+    thresholds = auto_threshold_distance(X, y)
 
-    # 儲存全部模型
-    save_all(X, y, knn, svm, centers, label_map, thr)
+    save_all(X, y, knn, svm, centers, label_map, thresholds)
 
     print("\n🎉 三分類器訓練完成！")
