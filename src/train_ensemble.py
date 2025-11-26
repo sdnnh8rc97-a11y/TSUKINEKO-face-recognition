@@ -38,16 +38,26 @@ def load_old_data():
     return np.array([]), np.array([])
 
 
-def detect_new_persons(y_old):
-    """檢查 RAW_DIR 裡哪些人物沒有在原本 y_old 裡"""
-    persons = sorted(os.listdir(RAW_DIR))
+def load_old_data():
+    X_path = os.path.join(MODEL_DIR, "X.npy")
+    y_path = os.path.join(MODEL_DIR, "y.npy")
+    map_path = os.path.join(MODEL_DIR, "label_map.json")
 
-    # y_old 裡存的是人名（非 index）
-    old_people = set(y_old.tolist()) if len(y_old) > 0 else set()
+    if os.path.exists(X_path) and os.path.exists(y_path) and os.path.exists(map_path):
+        print("📂 載入舊資料 X.npy / y.npy / label_map.json")
 
-    new_list = [p for p in persons if p not in old_people]
-    print(f"\n🆕 新增人物：{new_list}")
-    return new_list
+        X = np.load(X_path)
+        y_index = np.load(y_path)
+        label_map = json.load(open(map_path, "r", encoding="utf-8"))
+
+        # 反查 index → 中文名字
+        inv_map = {v: k for k, v in label_map.items()}
+        y_raw = np.array([inv_map[str(idx)] for idx in y_index])
+
+        return X, y_raw, label_map
+
+    print("⚠️ 第一次訓練，未找到舊模型")
+    return np.array([]), np.array([]), {}
 
 
 # ================================
