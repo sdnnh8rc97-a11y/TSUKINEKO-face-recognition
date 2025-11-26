@@ -1,4 +1,4 @@
-%%writefile /content/face_system/src/predict_ensemble.py
+
 import os
 import json
 import pickle
