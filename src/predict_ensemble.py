@@ -1,92 +1,111 @@
+%%writefile /content/face_system/src/predict_ensemble.py
 import os
 import json
-import joblib
+import pickle
 import numpy as np
+import cv2
+from numpy.linalg import norm
+from insightface.app import FaceAnalysis
 
-from face_embedder import FaceEmbedder
-from face_detector import FaceDetector
+MODEL_DIR = "/content/face_system/models"
 
-MODEL_DIR = "./models"
-UNKNOWN_THRESHOLD = 0.45  # 建議先用 0.45，之後再微調
+COSINE_WEIGHT = 0.5
+KNN_WEIGHT = 0.3
+SVM_WEIGHT = 0.2
 
-# Load models
-knn = joblib.load(os.path.join(MODEL_DIR, "knn.pkl"))
-svm = joblib.load(os.path.join(MODEL_DIR, "svm.pkl"))
-label_map = json.load(open(os.path.join(MODEL_DIR, "label_map.json")))
-centers = json.load(open(os.path.join(MODEL_DIR, "centers.json")))
-
-# 工具
-embedder = FaceEmbedder()
-detector = FaceDetector()
-
-def cosine(a, b):
-    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+MIN_FACE_SIZE = 40  # 小於這個框的臉自動 Unknown
 
 
-# -----------------------------
-# Ensemble Voting
-# -----------------------------
-def ensemble_predict(emb):
-    # 1️⃣ Center-based
-    center_scores = {p: cosine(emb, np.array(vec)) for p, vec in centers.items()}
-    center_best = max(center_scores, key=center_scores.get)
-    center_conf = center_scores[center_best]
+# ============================
+# Safe imread（支援中文路徑）
+# ============================
+def imread_safe(path):
+    return cv2.imdecode(np.fromfile(path, dtype=np.uint8), -1)
 
-    # 2️⃣ KNN
-    knn_prob = knn.predict_proba([emb])[0]
-    knn_idx = np.argmax(knn_prob)
-    knn_name = label_map[str(knn_idx)]
-    knn_conf = knn_prob[knn_idx]
 
-    # 3️⃣ SVM
-    svm_prob = svm.predict_proba([emb])[0]
-    svm_idx = np.argmax(svm_prob)
-    svm_name = label_map[str(svm_idx)]
-    svm_conf = svm_prob[svm_idx]
+# ============================
+# 載入模型
+# ============================
+def load_models():
+    with open(f"{MODEL_DIR}/knn.pkl", "rb") as f:
+        knn = pickle.load(f)
 
-    # -------------------------
-    # Ensemble 合併
-    # 加權可調整（目前：center 0.3 / knn 0.3 / svm 0.4）
-    # -------------------------
-    final_scores = {}
+    with open(f"{MODEL_DIR}/svm.pkl", "rb") as f:
+        svm = pickle.load(f)
 
-    for person in label_map.values():
-        idx = list(label_map.values()).index(person)
+    with open(f"{MODEL_DIR}/centers.pkl", "rb") as f:
+        centers = pickle.load(f)
 
-        final_scores[person] = (
-            0.30 * center_scores.get(person, 0) +
-            0.30 * knn_prob[idx] +
-            0.40 * svm_prob[idx]
+    with open(f"{MODEL_DIR}/label_map.json", "r") as f:
+        label_map = json.load(f)
+
+    with open(f"{MODEL_DIR}/threshold.json", "r") as f:
+        thr = json.load(f)["cosine_threshold"]
+
+    inv_label = {v: k for k, v in label_map.items()}
+
+    return knn, svm, centers, label_map, inv_label, thr
+
+
+# ============================
+# Cosine similarity
+# ============================
+def compute_cosine(a, b):
+    return float(np.dot(a, b) / (norm(a) * norm(b)))
+
+
+# ============================
+# 單臉 Ensemble 推論
+# ============================
+def classify_embedding(emb, knn, svm, centers, inv_label, cosine_thr):
+    # --- 1. cosine ---
+    cos_scores = {}
+    for person, center in centers.items():
+        cos_scores[person] = compute_cosine(emb, center)
+
+    cosine_pred = max(cos_scores, key=cos_scores.get)
+    cosine_conf = cos_scores[cosine_pred]
+
+    if cosine_conf < cosine_thr:
+        cosine_pred = "Unknown"
+
+    # --- 2. KNN ---
+    knn_pred_raw = knn.predict([emb])[0]
+    # 計算 knn confidence：k 鄰居有多少同 label
+    dist, idx = knn.kneighbors([emb], n_neighbors=3, return_distance=True)
+    labels = knn.classes_
+    neighbor_labels = [knn._y[i] for i in idx[0]]
+    knn_conf = neighbor_labels.count(knn_pred_raw) / 3.0
+
+    knn_pred = knn_pred_raw if knn_conf >= 0.34 else "Unknown"
+
+    # --- 3. SVM ---
+    svm_probs = svm.predict_proba([emb])[0]
+    max_idx = np.argmax(svm_probs)
+    svm_pred_raw = svm.classes_[max_idx]
+    svm_conf = svm_probs[max_idx]
+
+    svm_pred = svm_pred_raw if svm_conf >= 0.40 else "Unknown"
+
+    # ============================
+    # Weighted Ensemble
+    # ============================
+    score_map = {}
+
+    for name in centers.keys():
+        score_map[name] = (
+            (cos_scores.get(name, 0) * COSINE_WEIGHT) +
+            (knn_conf if knn_pred_raw == name else 0) * KNN_WEIGHT +
+            (svm_conf if svm_pred_raw == name else 0) * SVM_WEIGHT
         )
 
-    best_person = max(final_scores, key=final_scores.get)
-    best_score = final_scores[best_person]
+    # Unknown Score
+    unknown_score = (
+        (1 - cosine_conf) * COSINE_WEIGHT +
+        (1 - knn_conf) * KNN_WEIGHT +
+        (1 - svm_conf) * SVM_WEIGHT
+    )
 
-    # Unknown 判斷
-    if best_score < UNKNOWN_THRESHOLD:
-        return "Unknown", float(best_score)
+    final_pred = max(score_map, key=score_map.get)
+    final_score =
 
-    return best_person, float(best_score)
-
-
-# -----------------------------
-# 實際推論流程
-# -----------------------------
-def predict_image(image_path):
-    faces = detector.detect(image_path)
-    results = []
-
-    for face in faces:
-        emb = embedder.get_embedding(face["crop"])
-        if emb is None:
-            continue
-
-        name, conf = ensemble_predict(emb)
-
-        results.append({
-            "name": name,
-            "confidence": round(conf, 3),
-            "bbox": face["bbox"]
-        })
-
-    return results
