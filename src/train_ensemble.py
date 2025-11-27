@@ -14,7 +14,7 @@ from insightface.app import FaceAnalysis
 # ================================
 DATA_DIR = "/content/drive/MyDrive/face_DataSet"
 RAW_DIR = f"{DATA_DIR}/face_raw"
-MODEL_DIR = "/content/face_system/models"
+MODEL_DIR = "/content/drive/MyDrive/face_DataSet/models"
 
 os.makedirs(MODEL_DIR, exist_ok=True)
 
