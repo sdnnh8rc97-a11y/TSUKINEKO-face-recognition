@@ -45,7 +45,6 @@ def load_old_data():
         try:
             inv_map[int(idx)] = name
         except:
-            # 不可轉成 int = 舊格式 → 放棄舊資料、重訓
             print("⚠️ 偵測到舊格式 label_map，將進行全面重訓")
             return np.array([]), np.array([]), {}
 
@@ -74,6 +73,7 @@ def detect_person_change(label_map_old):
 
     return changed
 
+
 # ================================
 # 3. 偵測照片數量變動
 # ================================
@@ -101,6 +101,7 @@ def detect_image_count_changed():
 
     json.dump(new_record, open(record_path, "w", encoding="utf-8"), indent=2)
     return changed
+
 
 # ================================
 # 4. 提取 embeddings
@@ -131,24 +132,39 @@ def extract_embeddings(person_list):
 
     return np.array(X), np.array(y)
 
+
 # ================================
-# 5. 三分類器
+# 5. 🔥 三分類器（只修改 KNN）
 # ================================
+
 def train_knn(X, y):
-    model = KNeighborsClassifier(n_neighbors=3)
-    model.fit(X, y)
-    return model
+    print("\n🔥 訓練 KNN（cosine + distance）")
+
+    knn = KNeighborsClassifier(
+        n_neighbors=3,
+        metric="cosine",        # ⭐ 關鍵 1：改 cosine
+        weights="distance"      # ⭐ 關鍵 2：讓近的臉更重要
+    )
+
+    # y 必須是 index 而不是中文
+    # 但我們先用原始 y（中文），後面會轉 index
+    knn.fit(X, y)
+
+    return knn
+
 
 def train_svm(X, y):
     model = SVC(kernel="linear", probability=True)
     model.fit(X, y)
     return model
 
+
 def calc_centers(X, y):
     centers = {}
     for person in np.unique(y):
         centers[person] = X[y == person].mean(axis=0)
     return centers
+
 
 # ================================
 # 6. 自動 threshold（距離版）
@@ -199,6 +215,7 @@ def auto_threshold_distance(X, y):
     json.dump(thresholds, open(os.path.join(MODEL_DIR, "threshold.json"), "w"), indent=2)
     return thresholds
 
+
 # ================================
 # 7. 儲存
 # ================================
@@ -210,9 +227,11 @@ def save_all(X_raw, y_index, knn, svm, centers, label_map, thresholds):
     pickle.dump(svm, open(f"{MODEL_DIR}/svm.pkl", "wb"))
     pickle.dump(centers, open(f"{MODEL_DIR}/centers.pkl", "wb"))
 
-    json.dump(label_map, open(f"{MODEL_DIR}/label_map.json", "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+    json.dump(label_map, open(f"{MODEL_DIR}/label_map.json", "w", encoding="utf-8"),
+              ensure_ascii=False, indent=2)
 
     print("\n💾 模型與資料保存完成！")
+
 
 # ================================
 # 8. Main
@@ -222,11 +241,9 @@ if __name__ == "__main__":
 
     must_retrain = False
 
-    # 人名變動
     if detect_person_change(label_map_old):
         must_retrain = True
 
-    # 照片數變動
     if detect_image_count_changed():
         must_retrain = True
 
@@ -234,16 +251,18 @@ if __name__ == "__main__":
         print("\n✔️ 沒有任何變化，不需要重新訓練")
         exit()
 
-    # --- 開始訓練 ---
     persons = sorted(os.listdir(RAW_DIR))
     X_new, y_new = extract_embeddings(persons)
 
-    # 新 label_map
     unique_names = sorted(set(y_new.tolist()))
     label_map = {name: idx for idx, name in enumerate(unique_names)}
     y_index = np.array([label_map[name] for name in y_new])
 
+    # 這裡改了：KNN 用中文 y_new 訓練沒關係
+    # 因為 predict 裡你只用 "誰" 不用 index
     knn = train_knn(X_new, y_new)
+
+    # SVM / Centers 用 index 也可以，但你原本都是中文 → 保持一致
     svm = train_svm(X_new, y_new)
     centers = calc_centers(X_new, y_new)
 
@@ -251,4 +270,5 @@ if __name__ == "__main__":
 
     save_all(X_new, y_index, knn, svm, centers, label_map, thresholds)
 
-    print("\n🎉 三分類器訓練完成！")
+    print("\n🎉 三分類器完整訓練完成！")
+
