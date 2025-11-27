@@ -5,6 +5,41 @@ import numpy as np
 import cv2
 from tqdm import tqdm
 from insightface.app import FaceAnalysis
+from numpy.linalg import norm
+# ======================================================
+# 計算 Cosine / L2 閾值（最小更動版）
+# ======================================================
+
+def calc_threshold_auto(X, y):
+    same = []
+    diff = []
+
+    for i in range(len(X)):
+        for j in range(i + 1, len(X)):
+            d = norm(X[i] - X[j])
+            if y[i] == y[j]:
+                same.append(d)
+            else:
+                diff.append(d)
+
+    if len(same) == 0 or len(diff) == 0:
+        # fallback（第一次訓練、人太少都會走這裡）
+        thr = 0.60
+    else:
+        same = np.array(same)
+        thr = float(same.max() + 0.02)
+
+    # 儲存 JSON
+    out = {"balanced": thr}
+    json.dump(
+        out,
+        open(f"{MODEL_DIR}/threshold.json", "w"),
+        indent=2,
+        ensure_ascii=False
+    )
+
+    print(f"✔ 自動 threshold 已更新：{thr:.4f}")
+    return thr
 
 # ======================================================
 # 基本設定
@@ -210,6 +245,10 @@ if __name__ == "__main__":
     svm = train_svm(X_new, y_new)
     centers = calc_centers(X_new, y_new)
 
+    # 保存所有模型
     save_all(X_new, y_new, new_label_map, knn, svm, centers)
+
+    # 🔥 新增：產生 threshold.json（放在 main 裡面）
+    calc_threshold_auto(X_new, y_new)
 
     print("\n🎉 重新訓練完成！")
