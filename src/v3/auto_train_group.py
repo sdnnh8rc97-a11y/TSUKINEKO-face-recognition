@@ -1,6 +1,6 @@
 # ===============================================================
-#  三合一臉辨系統（高速版 + 資料庫 + 團體照分類）
-#  作者：まさき專用
+#  三合一臉辨系統（高速版 + Anti-Drift Auto-Train + 團體照分類）
+#  作者：まさき專用（V3.1 安全版）
 # ===============================================================
 
 import os
@@ -17,9 +17,9 @@ import pickle
 # 設定路徑（可自行調整）
 # ---------------------------------------------------------------
 RAW_ROOT = "/content/drive/MyDrive/face_DataSet/face_raw"                 
-CACHE_ROOT = "/content/drive/MyDrive/face_DataSet/face_emb_cache" # cache 會存 .npy
-CLASSIFY_SAVE = "/content/drive/MyDrive/face_DataSet/face_clean_group"  # 分類後的裁切臉照
-GROUP_PHOTO = "/content/drive/MyDrive/test_faces/保全group測試/19534.jpg"  # 團體照
+CACHE_ROOT = "/content/drive/MyDrive/face_DataSet/face_emb_cache"
+CLASSIFY_SAVE = "/content/drive/MyDrive/face_DataSet/face_clean_group"
+GROUP_PHOTO = "/content/drive/MyDrive/test_faces/保全group測試/19534.jpg"
 
 
 # ---------------------------------------------------------------
@@ -30,7 +30,7 @@ app.prepare(ctx_id=0, det_size=(640, 640))
 
 
 # ===============================================================
-#  STEP 1 — 建立 embedding cache（第一次跑較久，之後秒跑）
+#  STEP 1 — 建立 embedding cache
 # ===============================================================
 def build_cache():
     os.makedirs(CACHE_ROOT, exist_ok=True)
@@ -79,7 +79,7 @@ def build_cache():
 
 
 # ===============================================================
-#  STEP 2 — 從 cache 建立資料庫（秒載入）
+#  STEP 2 — 從 cache 建立資料庫（平均 embedding）
 # ===============================================================
 def load_database():
     db = {}
@@ -102,35 +102,48 @@ def load_database():
     return db
 
 
-# Cosine 比對
-def classify(emb, db, threshold=0.38):
-    best_person = "unknown"
-    best_score = -1
-
-    for person, center in db.items():
-        score = np.dot(emb, center)
-        if score > best_score:
-            best_score = score
-            best_person = person
-
-    return best_person if best_score >= threshold else "unknown"
 # ===============================================================
-# STEP 2.5 — Retrain 三分類器（吃 cache → 秒級）
+#  STEP 2.1 — Cluster Stats（中心＋標準差）
 # ===============================================================
+def build_db_stats():
+    stats = {}
+
+    for person in os.listdir(CACHE_ROOT):
+        p_dir = os.path.join(CACHE_ROOT, person)
+        if not os.path.isdir(p_dir):
+            continue
+
+        embs = []
+        for f in os.listdir(p_dir):
+            if f.endswith(".npy"):
+                embs.append(np.load(os.path.join(p_dir, f)))
+
+        if len(embs) >= 3:
+            emb_arr = np.vstack(embs)
+            stats[person] = {
+                "center": np.mean(emb_arr, axis=0),
+                "std": np.std(emb_arr, axis=0).mean()
+            }
+
+    return stats
+
 
 # ===============================================================
-# 自動更新 cache：對新增的 raw.jpg 產生 embedding 並寫到 cache
+# 自動更新 cache（raw+embedding）
 # ===============================================================
 def update_cache_for(person, emb, filename):
     cache_dir = os.path.join(CACHE_ROOT, person)
     os.makedirs(cache_dir, exist_ok=True)
 
-    # 儲存 embedding
     cache_path = os.path.join(cache_dir, filename + ".npy")
     np.save(cache_path, emb)
 
     print(f"🔄 Auto-Cache：已寫入 → {cache_path}")
 
+
+# ===============================================================
+# 重新訓練 SVM / KNN（三分類器）
+# ===============================================================
 def retrain_models(cache_root=CACHE_ROOT):
 
     X = []
@@ -152,13 +165,13 @@ def retrain_models(cache_root=CACHE_ROOT):
 
     print(f"📌 retrain 樣本數：{len(X)}")
 
-    # ------ Train SVM ------
+    # Train SVM
     print("🔧 訓練 SVM ...")
     svm = SVC(kernel='linear', probability=True)
     svm.fit(X, y)
     pickle.dump(svm, open(os.path.join(cache_root, "svm.pkl"), "wb"))
 
-    # ------ Train KNN ------
+    # Train KNN
     print("🔧 訓練 KNN ...")
     knn = KNeighborsClassifier(n_neighbors=3, metric='cosine')
     knn.fit(X, y)
@@ -168,24 +181,16 @@ def retrain_models(cache_root=CACHE_ROOT):
     return svm, knn
 
 
-# 執行 retrain（放在 STEP2 後面）
+# 先載入一次
 svm_model, knn_model = retrain_models()
 
 
 # ===============================================================
-#  STEP 3 — 團體照 → 裁切 → 比對 → 分類
-# ===============================================================
-# ===============================================================
-#  STEP 3 — 團體照 → 裁切 →（左→右排序）→ 比對 → 分類
-# ===============================================================
-
-# ===============================================================
 # Ensemble（三分類器投票）
 # ===============================================================
-
 def ensemble_predict(emb, db, svm, knn, cos_threshold=0.38):
 
-    # --- Cosine ---
+    # Cosine
     best_person, best_score = "Unknown", -1
     for person, center in db.items():
         score = float(np.dot(emb, center))
@@ -195,14 +200,14 @@ def ensemble_predict(emb, db, svm, knn, cos_threshold=0.38):
 
     cosine_pred = best_person if best_score >= cos_threshold else "Unknown"
 
-    # --- SVM ---
+    # SVM
     svm_pred = svm.predict([emb])[0]
     svm_conf = max(svm.predict_proba([emb])[0])
 
-    # --- KNN ---
+    # KNN
     knn_pred = knn.predict([emb])[0]
 
-    # --- Voting ---
+    # Voting
     votes = [cosine_pred, svm_pred, knn_pred]
     final = max(votes, key=votes.count)
 
@@ -213,19 +218,48 @@ def ensemble_predict(emb, db, svm, knn, cos_threshold=0.38):
         "svm_conf": svm_conf,
         "knn_pred": knn_pred
     }
+
+
 # ===============================================================
-# STEP 3 — 團體照（左→右排序）＋ Ensemble 分類
+# V3.1 Auto-Train 判斷（企業級 Anti-Drift）
+# ===============================================================
+def allow_auto_train(final_pred, details, emb, db_stats):
+
+    cosine_ok = details["cosine_conf"] >= 0.78
+    svm_ok = details["svm_conf"] >= 0.85
+
+    consistent = (
+        details["cosine_pred"] == final_pred and
+        details["svm_pred"] == final_pred and
+        details["knn_pred"] == final_pred
+    )
+
+    if not (cosine_ok and svm_ok and consistent):
+        return False
+
+    # Cluster Distance Check
+    center = db_stats[final_pred]["center"]
+    std = db_stats[final_pred]["std"]
+
+    dist = np.linalg.norm(emb - center)
+    max_allowed = std * 1.2
+
+    return dist <= max_allowed
+
+
+# ===============================================================
+# STEP 3 — 團體照分類（含 Auto-Train V3.1）
 # ===============================================================
 def classify_group_photo():
-    global svm_model, knn_model   # 🟩 必須移到 function 最上方！
+    global svm_model, knn_model
 
     os.makedirs(CLASSIFY_SAVE, exist_ok=True)
 
     img = cv2.imread(GROUP_PHOTO)
     faces = app.get(img)
 
-    # 左→右排序
-    faces = sorted(faces, key=lambda f: f.bbox[0])
+    faces = sorted(faces, key=lambda f: f.bbox[0])  # 左→右排序
+    db_stats = build_db_stats()
 
     print(f"\n📸 偵測到 {len(faces)} 張臉（已排序）\n")
 
@@ -234,10 +268,8 @@ def classify_group_photo():
         crop = img[y1:y2, x1:x2]
         emb = f.normed_embedding
 
-        # --- 三分類器 ensemble ---
         final_pred, details = ensemble_predict(emb, database, svm_model, knn_model)
 
-        # --- 儲存裁切臉 ---
         save_dir = os.path.join(CLASSIFY_SAVE, final_pred)
         os.makedirs(save_dir, exist_ok=True)
         out_path = os.path.join(save_dir, f"group_{i+1}.jpg")
@@ -246,31 +278,26 @@ def classify_group_photo():
         print(f"臉 {i+1}: 最終分類 → {final_pred}")
         print(details)
 
-        # ==========================================================
-        # Auto-training（安全版：高信心才會加入）
-        # ==========================================================
-        if (details["cosine_conf"] >= 0.65 and 
-            details["svm_conf"] >= 0.80 and 
-            final_pred != "Unknown"):
+        # --- Auto-Train V3.1 ---
+        if final_pred != "Unknown" and final_pred in db_stats:
+            if allow_auto_train(final_pred, details, emb, db_stats):
 
-            # --- 1. 新增 raw 訓練資料 ---
-            auto_raw_dir = os.path.join(RAW_ROOT, final_pred)
-            os.makedirs(auto_raw_dir, exist_ok=True)
+                auto_raw_dir = os.path.join(RAW_ROOT, final_pred)
+                os.makedirs(auto_raw_dir, exist_ok=True)
 
-            add_path = os.path.join(auto_raw_dir, f"auto_{i+1}.jpg")
-            cv2.imwrite(add_path, crop)
+                add_path = os.path.join(auto_raw_dir, f"auto_{i+1}.jpg")
+                cv2.imwrite(add_path, crop)
 
-            print(f"✅ Auto-Train：新增 raw → {add_path}")
+                print(f"✅ Auto-Train：新增 raw → {add_path}")
 
-            # --- 2. 自動產生 cache (.npy) ---
-            update_cache_for(final_pred, emb, f"auto_{i+1}")
+                update_cache_for(final_pred, emb, f"auto_{i+1}")
 
+            else:
+                print("⚠️ Auto-Train 跳過（信心或 cluster 距離不足）")
         else:
-            print(f"⚠️ Auto-Train 跳過：信心不足，不加入訓練")
+            print("⚠️ 未加入 Auto-Train（Unknown 或 stats 不足）")
 
-    # ==========================================================
-    # 自動 retrain（三分類器）
-    # ==========================================================
+    # Retrain 一次
     print("\n🔄 Auto retrain（三分類器）...")
     svm_model, knn_model = retrain_models()
     print("🎉 Auto retrain 完成！模型已更新")
@@ -281,7 +308,6 @@ def classify_group_photo():
 # ===============================================================
 #  一鍵執行全部步驟
 # ===============================================================
-
 print("\n🚀 STEP1：開始建立 embedding cache ...")
 build_cache()
 
@@ -292,3 +318,4 @@ print("\n🚀 STEP3：開始處理團體照 ...")
 classify_group_photo()
 
 print("\n🎉 全流程完成！")
+
