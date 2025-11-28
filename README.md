@@ -1,111 +1,170 @@
-# TSUKINEKO-face-recognition
-Version 3 — 自動化人臉辨識系統（Ensemble + Auto-Train）
+🚀 TSUKINEKO Face Recognition — V3 Pipeline
+（Cosine + SVM + KNN Ensemble / Auto-Train / Group-Photo Training）
 
-版本：v3.0.0（2025/11/28）
-本版本是 TSUKINEKO-face-recognition 的 正式主線版本，以可上線部署為核心目標，完成全面重構，並加入自動訓練功能。
+這份 README 設計給使用者、同事、主管都能一看就懂你整個系統的強度。
 
-本版本的核心功能
-1. 三分類器 Ensemble（Cosine + SVM + KNN Distance）
+📖 目錄
 
-Cosine Similarity（支援 center vectors）
+系統簡介
 
-SVM（Linear SVC）
+功能特色
 
-KNN（向量距離計算）
+資料夾架構
 
-三者投票（tie-breaker：SVM Confidence）
+安裝＆環境設定
 
-✔ 大幅提高中距離 / 團體照的辨識穩定度
-✔ 可避免單一模型偏差造成誤判
+使用方式
 
-2. 自動裁切 + 棧板式排序
+STEP1：放入新照片
 
-團體照偵測所有人臉
+STEP2：執行 V3
 
-自動依 X 座標排序（由左至右固定順序）
+STEP3：獲得辨識與自動訓練
 
-自動產生 bbox、embedding、信心值
+Auto-Train 訓練規則
 
-3. Auto-Train：自動新增訓練資料
+模型介紹
 
-當三分類器一致通過門檻時，自動：
+[版控策略（legacy）](#版控策略）
 
-裁切人臉 → 存入 face_raw/{person}/auto_x.jpg
+未來 Roadmap
 
-即刻產生 512 維向量 → face_emb_cache/{person}/auto_x.npy
+🧠 系統簡介
 
-不用重跑全部資料：直接更新該員的訓練集
+TSUKINEKO Face Recognition 是一套 高速、可自動訓練、可團體照輸入 的臉部辨識系統。
+使用 insightface + 三分類器（Cosine + SVM + KNN）ensemble。
 
-Auto-Train 保證資料量越用越大、準度越來越高。
+V3 版本加入：
 
-4. Auto-Retrain（瞬間更新模型）
+⭐ 團體照自動裁切＋分類
 
-不用重新跑 3000 張照片。
+⭐ 高信心照片自動加入資料庫（Auto-Train）
 
-本版本的 retrain 採用：
+⭐ retrain SVM/KNN 秒級完成
 
-已存在的 cache（.npy）
+⭐ 完整 cache 加速流程
 
-遞增式 retrain（SVM + KNN）
+⭐ 一鍵執行 pipeline
 
-重新訓練只需 2～4 秒。
+⭐ 自動化模型持續成長（越跑越準）
 
-5. 完整模組化架構（可供第三方整合）
-src/
-  face_detector.py
-  face_embedder.py
-  face_classifier.py
-  predict_ensemble.py
-  predict_group.py
-  train_ensemble.py
-  train_incremental.py
-  legacy/   ← 舊版備份
+✨ 功能特色
+✔ Ensemble 三分類器
+
+Cosine 相似度
+
+SVM（linear）
+
+KNN（cosine distance）
+
+三者投票決定最終預測（更穩定）。
+
+✔ 支援團體照 → 自動裁臉 → 自動分類
+
+自動偵測所有人臉
+
+左到右排序
+
+自動裁切
+
+自動投票分類
+
+高信心照片自動加入資料庫
+
+✔ Auto-Train（安全版）
+
+若同時滿足：
+
+模型	        閾值
+Cosine	    ≥ 0.65
+SVM	        ≥ 0.80
+Ensemble	  非 Unknown
+
+→ 才會加入訓練集。
+
+避免錯誤訓練污染資料庫。
+
+✔ 自動 retrain
+
+新照片加入後自動：
+
+更新 raw
+
+更新 cache
+
+retrain 三分類器
+
+立即可用
+
+✔ cache 加速
+
+第一次建立 cache 會比較久
+之後更新 → 只跑新增照片（瞬間完成）
+
+🔧 安裝與環境設定
+1. 安裝 requirements
+pip install -r requirements.txt
+
+2. InsightFace 模型會在程式中自動下載
+
+使用 buffalo_l：
+
+3D Landmark
+
+Detection
+
+Recognition
+
+🧪 使用方式（V3）
+STEP 1 — 放入訓練照片
+
+路徑（Google Drive）：
+
+face_DataSet/
+   face_raw/
+      人名1/
+      人名2/
+      ...
 
 
-此架構可輕鬆嵌入：
+你只需把新自拍照、團體照截圖丟進 face_raw/人名/
 
-後端 API
-
-AppSheet webhook
-
-Google Apps Script（GAS）
-
-Colab notebook automation
-
-models/（模型輸出）
-
-本版本會輸出以下模型：
-
-models/
-  label_map.pkl
-  svm.pkl
-  knn.pkl
-  centers.pkl
-  threshold.json
-
-適用場景
-
-保全部門點名系統
-
-團體照點名（自動裁切、自動排序）
-
-自走式增強訓練（Auto-Train）
-
-低成本部署（無需 GPU server）
-
-舊版（V1 / V2）
-
-已移至：
-
-src/legacy/
+STEP 2 — 執行 auto_train_group.py
+python auto_train_group.py
 
 
-包含早期版本的：
+它會自動跑：
 
-單 classifier 實作
+✔ cache
+✔ database
+✔ retrain
+✔ 團體照分類
+✔ Auto-Train
+✔ 自動 retrain
 
-舊版訓練流程
+STEP 3 — 取得分類結果
 
-舊版 group predict
+執行後會顯示：
 
-保留作為研究用途。
+每張臉的識別結果
+
+3 個分類器的 confidence
+
+是否成功加入訓練
+
+🔒 Auto-Train 訓練規則
+
+防止誤學習（污染模型）
+
+加入訓練的條件：
+
+cosine_conf ≥ 0.65
+svm_conf ≥ 0.80
+final_pred != "Unknown"
+
+🤖 模型介紹
+模型	       功能
+Cosine	   主投票核心，速度最快
+SVM	       可分類邊界更精準
+KNN	       防止 SVM 偏移的第二保障
+Ensemble	 綜合三者最終決定
