@@ -68,32 +68,31 @@ def root():
 def predict(req: PredictRequest):
 
     # 1. base64 → raw bytes
-    img_data = base64.b64decode(req.image_base64)
+    raw_bytes = base64.b64decode(req.image_base64)
 
-    # 2. raw bytes → numpy uint8 array
-    img_array = np.frombuffer(img_data, np.uint8)
-
-    # 3. numpy array → OpenCV image
+    # 2. for OpenCV image (only for drawing & bbox crop)
+    img_array = np.frombuffer(raw_bytes, np.uint8)
     img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
 
     if img is None:
         return {"status": "error", "message": "Image decode failed"}
 
-    # 4. detect face
-    faces = detect_faces(detector, img_array)  # ⬅️ 注意：丟 array，不是丟 img（你的 detect_faces 會自己 decode）
+    # 3. detect faces（注意：要給 raw_bytes，不是 numpy）
+    faces = detect_faces(detector, raw_bytes)
 
     if len(faces) == 0:
         return {"status": "no_face", "record_id": req.record_id}
 
-    # 5. 用第一張臉抽 embedding
+    # 4. 用第一張臉抽 embedding（注意：要給 raw_bytes）
     face = faces[0]
-    emb = get_embedding(embedder, img, face["bbox"])
+    emb = get_embedding(embedder, raw_bytes, face["bbox"])
 
-    # 6. Ensemble
+    # 5. Ensemble predict
     cos_label, cos_score = cosine_predict(emb)
     svm_label, svm_score = svm_predict(svm_model, emb)
     knn_label, knn_score = knn_predict(knn_model, emb)
 
+    # 多數決
     votes = [cos_label, svm_label, knn_label]
     final_label = max(set(votes), key=votes.count)
 
