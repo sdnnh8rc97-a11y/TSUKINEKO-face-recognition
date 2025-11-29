@@ -1,24 +1,18 @@
 import base64
-import io
 import numpy as np
-from PIL import Image
 from fastapi import FastAPI
+from pydantic import BaseModel
+from typing import List, Dict, Any
 
-# --------------------------------------------------
-# 匯入你原本的 predict_single / predict_group
-# --------------------------------------------------
-from src.predictor import predictor
-
+from src.face_detector import load_detector, detect_faces
+from src.embedding import load_embedder, get_embedding
+from src.classifier_cosine import cosine_predict
+from src.classifier_svm import load_svm, svm_predict
+from src.classifier_knn import load_knn, knn_predict
 
 app = FastAPI()
 
-
-# --------------------------------------------------
-# 避免 numpy 物件讓 FastAPI JSON 編碼爆炸
-# --------------------------------------------------
 def safe_convert(o):
-    import numpy as np
-
     if isinstance(o, (np.int64, np.int32, np.uint8)):
         return int(o)
     if isinstance(o, (np.float32, np.float64)):
@@ -28,56 +22,51 @@ def safe_convert(o):
     if isinstance(o, list):
         return [safe_convert(v) for v in o]
     return o
+print("📌 Loading models...")
 
+detector = load_detector()
+embedder = load_embedder()
+svm_model = load_svm()
+knn_model = load_knn()
 
-# --------------------------------------------------
-# 測試用根路由
-# --------------------------------------------------
+print("✅ All models loaded successfully!")
+class PredictRequest(BaseModel):
+    image_base64: str
+    record_id: str
 @app.get("/")
 def root():
-    return {"status": "ok", "message": "TSUKINEKO face API running"}
-
-
-# --------------------------------------------------
-# 單張人臉辨識
-# --------------------------------------------------
+    return {
+        "status": "ok",
+        "message": "TSUKINEKO face API running"
+    }
 @app.post("/predict")
-async def predict(payload: dict):
+def predict(req: PredictRequest):
 
-    # 1. 取出 base64
-    img_b64 = payload["image_base64"]
+    img_data = base64.b64decode(req.image_base64)
+    np_img = np.frombuffer(img_data, np.uint8)
+    faces = detect_faces(detector, np_img)
 
-    # 2. base64 → image array
-    img_bytes = base64.b64decode(img_b64)
-    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-    img_np = np.array(img)
+    if len(faces) == 0:
+        return {"status": "no_face", "record_id": req.record_id}
 
-    # 3. 執行辨識
-    raw_result = predictor.predict_single(img_np)
+    face = faces[0]
+    emb = get_embedding(embedder, np_img, face["bbox"])
 
-    # 4. 轉換 numpy → python int/float
-    return safe_convert({
-        "status": "ok",
-        "record_id": payload.get("record_id", "unknown"),
-        "result": raw_result
-    })
+    # Ensemble
+    cos_label, cos_score = cosine_predict(emb)
+    svm_label, svm_score = svm_predict(svm_model, emb)
+    knn_label, knn_score = knn_predict(knn_model, emb)
 
-
-# --------------------------------------------------
-# 團體照辨識
-# --------------------------------------------------
-@app.post("/predict_group")
-async def predict_group(payload: dict):
-
-    img_b64 = payload["image_base64"]
-    img_bytes = base64.b64decode(img_b64)
-    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-    img_np = np.array(img)
-
-    raw_result = predictor.predict_group(img_np)
+    votes = [cos_label, svm_label, knn_label]
+    final_label = max(set(votes), key=votes.count)
 
     return safe_convert({
         "status": "ok",
-        "record_id": payload.get("record_id", "unknown"),
-        "result": raw_result
+        "record_id": req.record_id,
+        "final_pred": final_label,
+        "details": {
+            "cosine": {"pred": cos_label, "score": cos_score},
+            "svm": {"pred": svm_label, "score": svm_score},
+            "knn": {"pred": knn_label, "score": knn_score},
+        }
     })
