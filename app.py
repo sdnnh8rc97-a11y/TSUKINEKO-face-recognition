@@ -67,30 +67,33 @@ def root():
 @app.post("/predict")
 def predict(req: PredictRequest):
 
-    # --- Base64 → numpy array ---
-    img_bytes = base64.b64decode(req.image_base64)
-    np_img = np.frombuffer(img_bytes, dtype=np.uint8)
-    img = cv2.imdecode(np_img, cv2.IMREAD_COLOR)
+    # 1. base64 → raw bytes
+    img_data = base64.b64decode(req.image_base64)
+
+    # 2. raw bytes → numpy uint8 array
+    img_array = np.frombuffer(img_data, np.uint8)
+
+    # 3. numpy array → OpenCV image
+    img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
 
     if img is None:
-        return {"status": "decode_failed", "record_id": req.record_id}
+        return {"status": "error", "message": "Image decode failed"}
 
-    # --- 偵測人臉 ---
-    faces = detect_faces(detector, img)
+    # 4. detect face
+    faces = detect_faces(detector, img_array)  # ⬅️ 注意：丟 array，不是丟 img（你的 detect_faces 會自己 decode）
+
     if len(faces) == 0:
         return {"status": "no_face", "record_id": req.record_id}
 
+    # 5. 用第一張臉抽 embedding
     face = faces[0]
-
-    # --- 取 embedding ---
     emb = get_embedding(embedder, img, face["bbox"])
 
-    # --- 各分類器 ---
+    # 6. Ensemble
     cos_label, cos_score = cosine_predict(emb)
     svm_label, svm_score = svm_predict(svm_model, emb)
     knn_label, knn_score = knn_predict(knn_model, emb)
 
-    # --- Ensemble Voting ---
     votes = [cos_label, svm_label, knn_label]
     final_label = max(set(votes), key=votes.count)
 
