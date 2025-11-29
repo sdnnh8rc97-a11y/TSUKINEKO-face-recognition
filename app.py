@@ -1,50 +1,37 @@
-# app.py — Cloud Run / FastAPI 入口
-
-from fastapi import FastAPI
-from pydantic import BaseModel
 import base64
-import cv2
+import io
 import numpy as np
-import sys
-from pathlib import Path
+from PIL import Image
+from fastapi import FastAPI
 
 # --------------------------------------------------
-# 1. 把 src 加到 sys.path，方便匯入 v3.auto_train_group
+# 匯入你原本的 predict_single / predict_group
 # --------------------------------------------------
-ROOT = Path(__file__).resolve().parent
-SRC_DIR = ROOT / "src"
-sys.path.append(str(SRC_DIR))
+from src.predictor import predictor
 
-from v3.auto_train_group import predict_single, predict_group  # 你剛加入的函式
 
 app = FastAPI()
 
 
 # --------------------------------------------------
-# 2. Request Body 定義
+# 避免 numpy 物件讓 FastAPI JSON 編碼爆炸
 # --------------------------------------------------
-class SinglePayload(BaseModel):
-    image_base64: str
-    record_id: str | None = None  # 之後 AppSheet 可以丟任意字串來
+def safe_convert(o):
+    import numpy as np
 
-
-class GroupPayload(BaseModel):
-    image_base64: str
-    record_id: str | None = None
-
-
-# --------------------------------------------------
-# 3. Base64 → OpenCV 圖片
-# --------------------------------------------------
-def decode_image(b64: str):
-    data = base64.b64decode(b64)
-    arr = np.frombuffer(data, dtype=np.uint8)
-    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-    return img
+    if isinstance(o, (np.int64, np.int32, np.uint8)):
+        return int(o)
+    if isinstance(o, (np.float32, np.float64)):
+        return float(o)
+    if isinstance(o, dict):
+        return {k: safe_convert(v) for k, v in o.items()}
+    if isinstance(o, list):
+        return [safe_convert(v) for v in o]
+    return o
 
 
 # --------------------------------------------------
-# 4. 健康檢查用（Cloud Run / 手動測試）
+# 測試用根路由
 # --------------------------------------------------
 @app.get("/")
 def root():
@@ -52,40 +39,45 @@ def root():
 
 
 # --------------------------------------------------
-# 5. 單張臉辨識 API
+# 單張人臉辨識
 # --------------------------------------------------
 @app.post("/predict")
-async def predict_endpoint(payload: SinglePayload):
-    img = decode_image(payload.image_base64)
-    result = predict_single(img)  # 呼叫你 V3.1 的邏輯
+async def predict(payload: dict):
 
-    return {
+    # 1. 取出 base64
+    img_b64 = payload["image_base64"]
+
+    # 2. base64 → image array
+    img_bytes = base64.b64decode(img_b64)
+    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+    img_np = np.array(img)
+
+    # 3. 執行辨識
+    raw_result = predictor.predict_single(img_np)
+
+    # 4. 轉換 numpy → python int/float
+    return safe_convert({
         "status": "ok",
-        "record_id": payload.record_id,
-        "result": result,
-    }
+        "record_id": payload.get("record_id", "unknown"),
+        "result": raw_result
+    })
 
 
 # --------------------------------------------------
-# 6. 團體照辨識 API（如果未來要用）
+# 團體照辨識
 # --------------------------------------------------
 @app.post("/predict_group")
-async def predict_group_endpoint(payload: GroupPayload):
-    img = decode_image(payload.image_base64)
-    results = predict_group(img)
+async def predict_group(payload: dict):
 
-    return {
+    img_b64 = payload["image_base64"]
+    img_bytes = base64.b64decode(img_b64)
+    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+    img_np = np.array(img)
+
+    raw_result = predictor.predict_group(img_np)
+
+    return safe_convert({
         "status": "ok",
-        "record_id": payload.record_id,
-        "results": results,
-    }
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(
-        "app:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=False
-    )
-
+        "record_id": payload.get("record_id", "unknown"),
+        "result": raw_result
+    })
