@@ -1,15 +1,20 @@
 import pickle
-import numpy as np
+import os
 
-MODEL_PATH = "models/knn_classifier.pkl"
+DEFAULT_KNN_PATH = os.path.join(
+    os.path.dirname(__file__),
+    "models",
+    "knn.pkl"
+)
 
-def load_knn():
-    with open(MODEL_PATH, "rb") as f:
+def load_knn(path: str = DEFAULT_KNN_PATH):
+    """Load KNN model from given path."""
+    with open(path, "rb") as f:
         return pickle.load(f)
 
+
 def knn_predict(model, emb):
-    dist, idx = model.kneighbors([emb], n_neighbors=1)
-    dist = dist[0][0]
     pred = model.predict([emb])[0]
-    score = max(0, 1 - dist)
+    score = -model.kneighbors([emb])[0][0][0]  # 距離越小越相似
     return pred, float(score)
+
